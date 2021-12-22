@@ -1,12 +1,9 @@
 import axios from 'axios'
 import dotenv from 'dotenv'
-import fs from 'fs'
 import * as duration from 'duration-fns'
+import { readJsonFile, sleep } from './utils/index.mjs'
 
 dotenv.config()
-
-let rawdata = fs.readFileSync('histórico-de-visualização.json')
-let history = JSON.parse(rawdata)
 
 const channels = [
   'Rocketseat',
@@ -116,51 +113,89 @@ function durationToTime(durationString) {
   return durationFormated
 }
 
+let myhistory = readJsonFile({ filename: 'myhistory.json' })
 
-const historyByChannelsAndTechs = []
+if(!myhistory) {
+  const history = readJsonFile({ filename: 'histórico-de-visualização.json' })
 
-history.forEach(history => {
-  if (history.subtitles) {
-    if (channels.includes(history.subtitles[0].name)) {
-      historyByChannelsAndTechs.push({
-        id: history.titleUrl.split('v=')[1],
-        title: history.title,
-        channel: history.subtitles[0].name
+  const historyByChannelsAndTechs = []
+
+  history.forEach(history => {
+    if (history.subtitles) {
+      if (channels.includes(history.subtitles[0].name)) {
+        historyByChannelsAndTechs.push({
+          id: history.titleUrl.split('v=')[1],
+          title: history.title,
+          channel: history.subtitles[0].name
+        })
+      }
+
+      technologiesLower.forEach(tech => {
+        if (sanitizeString(history.title.toLocaleLowerCase()).split(" ").includes(tech)) {
+          if (!historyByChannelsAndTechs.find(item => item.title === history.title)) {
+            historyByChannelsAndTechs.push({
+              id: history.titleUrl.split('v=')[1],
+              title: history.title,
+              channel: history.subtitles[0].name
+            })
+          }
+        }
       })
     }
+  })
 
-    technologiesLower.forEach(tech => {
-      if (sanitizeString(history.title.toLocaleLowerCase()).split(" ").includes(tech)) {
-        if (!historyByChannelsAndTechs.find(item => item.title === history.title)) {
-          historyByChannelsAndTechs.push({
-            id: history.titleUrl.split('v=')[1],
-            title: history.title,
-            channel: history.subtitles[0].name
-          })
-        }
-      }
-    })
+  console.log(historyByChannelsAndTechs.length)
+
+  const getDurationWithYoutubeVideoId = async (id, index) => {
+    try {
+      await sleep(index * 10)
+      const { data } = await axios(`https://www.googleapis.com/youtube/v3/videos?id=${id}&key=${process.env.YOUTUBE_KEY}&part=contentDetails`)
+      console.log('index', index, id)
+      return data.items[0] ? durationToTime(data.items[0].contentDetails.duration) : {}
+    } catch (error) {
+      console.log('error', error.response.status)
+    }
   }
-})
-const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay))
 
-// console.log(historyByChannelsAndTechs)
-console.log(historyByChannelsAndTechs.length)
+  const historyByChannelsAndTechsWithVideoDuration = await Promise.all(historyByChannelsAndTechs.map(async (history, index) =>{
+    const duration = await getDurationWithYoutubeVideoId(history.id, index)
+    return {
+      id: history.id,
+      title: history.title,
+      channel: history.channel,
+      duration
+    }
+  }))
 
-const getDurationWithYoutubeVideoId = async id => {
-  const { data } = await axios(`https://www.googleapis.com/youtube/v3/videos?id=${id}&key=${process.env.YOUTUBE_KEY}&part=contentDetails`)
-  return data.items[0] ? durationToTime(data.items[0].contentDetails.duration) : {}
+  // console.log(historyByChannelsAndTechsWithVideoDuration)
+  saveJsonFile('myhistory.json', JSON.stringify(historyByChannelsAndTechsWithVideoDuration))
+
+  myhistory = JSON.stringify(historyByChannelsAndTechsWithVideoDuration)
 }
 
-const historyByChannelsAndTechsWithVideoDuration = await Promise.all(historyByChannelsAndTechs.map(async history =>{
-  const duration = await getDurationWithYoutubeVideoId(history.id)
-  return {
-    id: history.id,
-    title: history.title,
-    channel: history.channel,
-    duration
+const youtubeTotalDuration = myhistory.reduce((history, part) => {
+  const duration = {
+    hours: part.duration && history.duration ? part.duration.hours + history.duration.hours : history?.duration?.hours || 0,
+    minutes: part.duration && history.duration ? part.duration.minutes + history.duration.minutes : history?.duration?.minutes || 0,
+    seconds: part.duration && history.duration ? part.duration.seconds + history.duration.seconds : history?.duration?.seconds || 0,
   }
-}))
 
-console.log(historyByChannelsAndTechsWithVideoDuration)
-// fs.writeFileSync('myhistory.json', JSON.stringify(historyByChannelsAndTechs))
+  if(duration.seconds > 60) {
+    duration.minutes += 1
+    duration.seconds -= 60
+  }
+
+  if(duration.minutes > 60) {
+    duration.hours += 1
+    duration.minutes -= 60
+  }
+
+  return { duration }
+
+}, {})
+
+console.log('youtubeTotalDuration', youtubeTotalDuration)
+
+// console.log(historyByChannelsAndTechs)
+
+
